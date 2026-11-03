@@ -688,17 +688,34 @@ def relaunch_untracked(sessions, ours, remote, children, commands, cache, dry_ru
         relaunched.pop(sid)
 
 
-def rate_limit_token():
-    """"lim:<5h %>/<5h reset>/<week %>/<week reset>" from the status line's last known limits."""
+def rate_limit_token(cache):
+    """"lim:<5h %>/<5h reset>/<week %>/<week reset>" from the status line's last known limits.
+
+    Every Claude session's status line writes the file with the limits it last heard,
+    so an idle tab redrawing its line puts back old numbers (03.11.2026: 100% fell to
+    77% for a minute) or leaves a window out. Within one window usage only grows, so
+    the cache keeps, per window, the latest reset time and the highest use seen for it."""
     try:
         with open(RATE_LIMITS) as f:
             rl = json.load(f)
-        five, week = rl.get("five_hour") or {}, rl.get("seven_day") or {}
-        values = [five.get("used_percentage"), five.get("resets_at"),
-                  week.get("used_percentage"), week.get("resets_at")]
-        return "lim:" + "/".join(str(round(v or 0)) for v in values)
     except (OSError, ValueError):
+        rl = {}
+    kept = cache.setdefault("_limits", {})
+    for key in ("five_hour", "seven_day"):
+        new, old = rl.get(key) or {}, kept.get(key) or {}
+        at, pct = new.get("resets_at"), new.get("used_percentage")
+        if not isinstance(at, (int, float)) or not isinstance(pct, (int, float)):
+            continue
+        if not old or at > old["resets_at"] + 60:
+            kept[key] = {"resets_at": at, "used_percentage": pct}
+        elif abs(at - old["resets_at"]) <= 60 and pct > old["used_percentage"]:
+            kept[key] = {"resets_at": old["resets_at"], "used_percentage": pct}
+    if not kept:
         return None
+    five, week = kept.get("five_hour") or {}, kept.get("seven_day") or {}
+    values = [five.get("used_percentage"), five.get("resets_at"),
+              week.get("used_percentage"), week.get("resets_at")]
+    return "lim:" + "/".join(str(round(v or 0)) for v in values)
 
 
 def git(*args):
@@ -990,7 +1007,7 @@ def main(dry_run=False):
     ours = our_workspaces(workspaces)
     # Account-wide tokens (usage limit, sidebar language) ride on one workspace: the first of ours.
     owner = ours[0]["id"] if ours else None
-    limit = rate_limit_token()
+    limit = rate_limit_token(cache)
     # Remembered in the cache too: these ride on one workspace, and closing it loses them.
     lang = carried(ours, "lang:") or cache.get("_lang")
     cache["_lang"] = lang
