@@ -6,7 +6,7 @@
 // Above them, the Claude Code usage limit and when it resets.
 //
 // What cmux doesn't know comes from workspace descriptions, written by
-// scripts/last-prompt-sync.py: "last prompt @<epoch> · bg · remote@<epoch> · zz@<epoch> · lim:… · lang:…".
+// scripts/last-prompt-sync.py: "last prompt @<epoch> · bg · settled:… · remote@<epoch> · zz@<epoch> · lim:… · lang:…".
 // cmux forgets latestAt on restart, calls a tab done as soon as Claude ends its
 // turn, and has no place for account-wide data, so the description carries it.
 //
@@ -303,7 +303,7 @@ function computeAgentState(w) {
   if (needs || (w.status === "needs-attention" && !stale)) {
     return { kind: "needs", since: secs(needs?.sinceEpoch ?? needs?.lastActivityAt) ?? lastPromptAt(w) };
   }
-  const working = agents.find((a) => a.status === "working");
+  const working = agents.find((a) => a.status === "working" && !settledAt(w, a));
   if (working) return { kind: "working", since: secs(working.sinceEpoch ?? working.lastActivityAt) };
   const last = lastPromptAt(w);
   // Turn ended, but a background shell or background agents are still going
@@ -862,11 +862,21 @@ const progressKey = (w) => {
   return p ? p.done + "/" + p.total : "";
 };
 
+// "settled:<surface>@<epoch>,…" (sync job): Claude in that tab ended its turn and nothing
+// it left running in the background counts as work, yet cmux still calls it "working"
+// while any background task of Claude's lives. The sync job drops the tab from the list
+// on its next run (15 s) once a new turn starts.
+function settledAt(w, agent) {
+  const m = /(?:^| · )settled:([^ ]+)/.exec(w?.description ?? "");
+  const id = (agent?.panelId ?? "").toUpperCase();
+  return !!m && !!id && m[1].split(",").some((x) => id.startsWith(x.split("@")[0].toUpperCase()));
+}
+
 // One tab under its workspace: indented, smaller, with that tab's own agent state.
 function tabState(w, tab) {
   const agent = (w?.agents ?? []).find((a) => a.panelId === tab?.id);
   if (agent?.status === "needs_input") return { kind: "needs", since: secs(agent.sinceEpoch) };
-  if (agent?.status === "working") return { kind: "working", since: secs(agent.sinceEpoch) };
+  if (agent?.status === "working" && !settledAt(w, agent)) return { kind: "working", since: secs(agent.sinceEpoch) };
   if (tab?.hasUnread) return { kind: "unread", since: secs(tab.latestAt) };
   return { kind: agent ? "done" : "none", since: secs(tab?.latestAt) };
 }

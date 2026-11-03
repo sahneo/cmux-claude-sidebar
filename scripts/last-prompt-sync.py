@@ -7,9 +7,13 @@ For every cmux workspace this writes into its description:
 - " · new" on a workspace you just opened that has no prompt yet;
 - " · bg" while Claude has ended its turn but still works in the background and
   will pick up on its own: a Bash-tool shell (shell-snapshots) under the claude
-  process that doesn't listen on a port (an idle dev server isn't work), or cmux's
+  process, started after your last prompt there (one left from an earlier turn is a
+  forgotten wait), that doesn't listen on a port (an idle dev server isn't work), or cmux's
   agent_lifecycle = backgroundWorkPending while a background agent wrote to its
   transcript in the last 2 min;
+- " · settled:<surface>@<epoch>,…": tabs whose Claude ended its turn (Stop, at <epoch>)
+  with nothing of the above going: cmux keeps calling such a tab "working" as long as any
+  background task of Claude's lives, so the sidebar shows it done instead;
 - " · zz@<epoch>" is set and cleared by the sidebar (you parked the tab in
   "Sleeping"); this script only keeps it;
 - " · st:<prompts>/<minutes>": your prompts and the wall-clock minutes this
@@ -260,6 +264,7 @@ def hook_sessions():
         return [{"workspace_id": r.get("workspaceId"), "surface_id": r.get("surfaceId"),
                  "transcript_path": r.get("transcriptPath"), "pid": r.get("pid"),
                  "agent_lifecycle": r.get("agentLifecycle"), "session_id": r.get("sessionId"),
+                 "hook_event": r.get("hookEventName"), "updated_at": r.get("updatedAt"),
                  "cwd": r.get("cwd"),
                  "launch_arguments": ((r.get("launchCommand") or {}).get("arguments"))} for r in records]
     except (OSError, ValueError, KeyError, AttributeError):
@@ -277,15 +282,27 @@ def agents_started_today(transcript, today):
 
 
 def process_table():
-    children, commands = {}, {}
-    for line in run("ps", "-axo", "pid=,ppid=,command=").splitlines():
-        parts = line.split(None, 2)
-        if len(parts) < 3:
+    """Children and command line of every process, and when each one started (epoch)."""
+    children, commands, started = {}, {}, {}
+    now = time.time()
+    for line in run("ps", "-axo", "pid=,ppid=,etime=,command=").splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 4:
             continue
         pid, ppid = int(parts[0]), int(parts[1])
-        commands[pid] = parts[2]
+        commands[pid] = parts[3]
+        started[pid] = now - elapsed_seconds(parts[2])
         children.setdefault(ppid, []).append(pid)
-    return children, commands
+    return children, commands, started
+
+
+def elapsed_seconds(etime):
+    """ps's etime, "[[dd-]hh:]mm:ss", in seconds."""
+    days, _, rest = etime.rpartition("-")
+    secs = 0
+    for part in rest.split(":"):
+        secs = secs * 60 + int(part)
+    return secs + int(days or 0) * 86400
 
 
 def listening_pids():
@@ -398,7 +415,11 @@ def fresh_subagent(session, within=120):
     return False
 
 
-def busy_in_background(session, children, commands, listening):
+def busy_in_background(session, children, commands, started, listening, since):
+    """Claude ended its turn but will pick up on its own. A shell counts only when it was
+    started after your last prompt here (`since`): one left from an earlier turn is a
+    forgotten wait, often one that can never end (`while pgrep -f x` finds itself, seen
+    03.11.2026), and kept the tab "working" for hours after Claude had answered."""
     pid = session.get("pid")
     if not pid or "claude" not in commands.get(pid, ""):
         return False  # no live Claude, so no background agents either
@@ -409,6 +430,8 @@ def busy_in_background(session, children, commands, listening):
         return True
     for child in children.get(pid, []):
         if "/.claude/shell-snapshots/" not in commands.get(child, ""):
+            continue
+        if since and started.get(child, 0) < since:
             continue
         if not any(p in listening for p in subtree(child, children)):
             return True
@@ -894,12 +917,12 @@ def main(dry_run=False):
     cache = {k: v for k, v in cache.items() if k.startswith("_")}   # drop the pre-"_tx" format
 
     tx = cache.setdefault("_tx", {})
-    children, commands = process_table()
+    children, commands, started = process_table()
     listening = listening_pids()
     tree = cmux_json("tree", "--json", "--id-format", "both")
     remote = remote_sessions(children, commands, tree)
     activity = remote_activity(remote, cache, int(time.time()))
-    latest, busy, progress, per_ws = {}, set(), {}, {}
+    latest, busy, progress, per_ws, settled = {}, set(), {}, {}, {}
     sessions = hook_sessions()
     for s in sessions:
         ws, path = s.get("workspace_id"), s.get("transcript_path")
@@ -910,12 +933,17 @@ def main(dry_run=False):
         if at and at > latest.get(ws, 0):
             latest[ws] = at
         per_ws.setdefault(ws, []).append(st)
-        if busy_in_background(s, children, commands, listening):
+        if busy_in_background(s, children, commands, started, listening, at):
             busy.add(ws)
             if s.get("agent_lifecycle") == "backgroundWorkPending" and fresh_subagent(s):
                 batch = subagent_batch(s, at)
                 done, total = progress.get(ws, (0, 0))
                 progress[ws] = (done + batch[0], total + batch[1])
+        elif s.get("agent_lifecycle") == "backgroundWorkPending" and s.get("hook_event") == "Stop" \
+                and s.get("surface_id") and s.get("updated_at"):
+            # cmux keeps calling this tab "working" for as long as any background task of
+            # Claude's lives, so tell the sidebar it isn't, as of this Stop.
+            settled.setdefault(ws, []).append(f"{s['surface_id'][:8]}@{int(s['updated_at'])}")
 
     # Today across every Claude session on this Mac, inside cmux or not, and the streak
     # of days in a row with at least one prompt (today may still be empty).
@@ -1007,6 +1035,7 @@ def main(dry_run=False):
             f"last prompt @{at}" if at else None,
             "new" if fresh else None,
             "bg" if w["id"] in busy else None,
+            "settled:" + ",".join(sorted(settled[w["id"]])) if w["id"] in settled else None,
             f"remote@{on_server}" if on_server else None,
             f"rwork@{server_work}" if server_work else None,
             sleep,
