@@ -110,7 +110,7 @@ CACHE = os.path.expanduser("~/.config/cmux/last-prompt-cache.json")
 # Description tokens, joined with " · ". A description with anything else is someone's own.
 # "skin:" is left over from the System 1 look (tag system1-skin): still ours, so the
 # workspace carrying it isn't dropped, and gone from the next description written.
-TOKEN = re.compile(r"^(last prompt @\d+|new|bg|zz@\d+|remote@\d+|rwork@\d+|st:[\d/]+|lim:[\d/]+|day:[\d/]+|win:\d+|focus:\d+|dl:\d+:\S+|dlseen:\d+|lang:(uk|en)|skin:(normal|system1|system1-lite)|spin:(color|pulse|dots|braille)|tabs:(on|off)|upd:v\d+\.\d+\.\d+:\S+|updhide:v\d+\.\d+\.\d+)$")
+TOKEN = re.compile(r"^(last prompt @\d+|new|bg|settled:[0-9A-Fa-f@,]+|zz@\d+|remote@\d+|rwork@\d+|st:[\d/]+|lim:[\d/]+|day:[\d/]+|win:\d+|focus:\d+|dl:\d+:\S+|dlseen:\d+|lang:(uk|en)|skin:(normal|system1|system1-lite)|spin:(color|pulse|dots|braille)|tabs:(on|off)|upd:v\d+\.\d+\.\d+:\S+|updhide:v\d+\.\d+\.\d+)$")
 RATE_LIMITS = os.path.expanduser("~/.claude/rate-limits.json")   # written by the Claude Code status line
 # The name the "Claude workspace" command gives a new workspace (config/cmux.snippet.jsonc
 # and its Ukrainian variant), and the tab titles Claude shows before it names the chat.
