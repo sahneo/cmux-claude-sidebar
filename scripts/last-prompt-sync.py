@@ -13,7 +13,9 @@ For every cmux workspace this writes into its description:
   transcript in the last 2 min;
 - " · settled:<surface>@<epoch>,…": tabs whose Claude ended its turn (Stop, at <epoch>)
   with nothing of the above going: cmux keeps calling such a tab "working" as long as any
-  background task of Claude's lives, so the sidebar shows it done instead;
+  background task of Claude's lives, so the sidebar shows it done instead; also a tab
+  cmux still calls "running" whose transcript (and its subagents') has been silent for
+  10 min with no shell started this turn under Claude (the turn ended without a Stop hook);
 - " · zz@<epoch>" is set and cleared by the sidebar (you parked the tab in
   "Sleeping"); this script only keeps it;
 - " · st:<prompts>/<minutes>": your prompts and the wall-clock minutes this
@@ -121,6 +123,7 @@ HOOK_SESSIONS = os.path.expanduser("~/.cmuxterm/claude-hook-sessions.json")
 WATCH_STATE = os.path.expanduser("~/.config/cmux/watch-state.json")
 TRANSCRIPTS = os.path.expanduser("~/.claude/projects/*/*.jsonl")
 FOCUS_SECONDS = 25 * 60   # the sidebar's focus timer
+STALE_RUNNING = 600  # seconds of transcript silence after which a "running" turn counts as ended
 IDLE_GAP = 300   # seconds between transcript entries still counted as time in the session
 SKIP_PREFIXES = ("<local-command", "[Request interrupted", "<system-reminder", "Caveat:")
 SLEEP_AFTER = 24 * 3600   # no prompt for this long: the sidebar's "Sleeping" (its INACTIVE_AFTER)
@@ -269,6 +272,17 @@ def hook_sessions():
                  "launch_arguments": ((r.get("launchCommand") or {}).get("arguments"))} for r in records]
     except (OSError, ValueError, KeyError, AttributeError):
         return cmux_json("sessions", "list", "--json", "--all").get("sessions", [])
+
+
+def active_session_by_surface():
+    """surface → the Claude session cmux runs in it now; a surface keeps records of
+    earlier sessions too, and only the current one says what the tab is doing."""
+    try:
+        with open(HOOK_SESSIONS) as f:
+            records = json.load(f).get("activeSessionsBySurface") or {}
+        return {k: (v or {}).get("sessionId") for k, v in records.items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def agents_started_today(transcript, today):
@@ -941,6 +955,7 @@ def main(dry_run=False):
     activity = remote_activity(remote, cache, int(time.time()))
     latest, busy, progress, per_ws, settled = {}, set(), {}, {}, {}
     sessions = hook_sessions()
+    active = active_session_by_surface()
     for s in sessions:
         ws, path = s.get("workspace_id"), s.get("transcript_path")
         if not ws or not path or not os.path.exists(path):
@@ -961,6 +976,16 @@ def main(dry_run=False):
             # cmux keeps calling this tab "working" for as long as any background task of
             # Claude's lives, so tell the sidebar it isn't, as of this Stop.
             settled.setdefault(ws, []).append(f"{s['surface_id'][:8]}@{int(s['updated_at'])}")
+        elif s.get("agent_lifecycle") == "running" and s.get("surface_id") and st \
+                and active.get(s["surface_id"]) == s.get("session_id") \
+                and time.time() - st["last"] > STALE_RUNNING and not fresh_subagent(s, STALE_RUNNING) \
+                and not any("/.claude/shell-snapshots/" in commands.get(c, "") and started.get(c, 0) >= (at or 0)
+                            for c in children.get(s.get("pid"), [])):
+            # A turn that ended without a Stop hook (Esc, an error, a full context, a reply
+            # to a background task's notification) stays "running" in cmux for good: seen on
+            # 04.11.2026, tabs "working" for 4 h and 26 h. Silence in the transcript and its
+            # subagents' and no shell started this turn under Claude mean it's waiting for you.
+            settled.setdefault(ws, []).append(f"{s['surface_id'][:8]}@{int(st['last'])}")
 
     # Today across every Claude session on this Mac, inside cmux or not, and the streak
     # of days in a row with at least one prompt (today may still be empty).
