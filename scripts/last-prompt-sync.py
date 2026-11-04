@@ -976,11 +976,13 @@ def main(dry_run=False):
             # cmux keeps calling this tab "working" for as long as any background task of
             # Claude's lives, so tell the sidebar it isn't, as of this Stop.
             settled.setdefault(ws, []).append(f"{s['surface_id'][:8]}@{int(s['updated_at'])}")
-        elif s.get("agent_lifecycle") == "running" and s.get("surface_id") and st \
+        elif s.get("agent_lifecycle") in ("running", "needsInput") and s.get("surface_id") and st \
                 and active.get(s["surface_id"]) == s.get("session_id") \
                 and time.time() - st["last"] > STALE_RUNNING and not fresh_subagent(s, STALE_RUNNING) \
                 and not any("/.claude/shell-snapshots/" in commands.get(c, "") and started.get(c, 0) >= (at or 0)
                             for c in children.get(s.get("pid"), [])):
+            # needsInput too: after a StopFailure (an API error) cmux still shows the tab
+            # working, though Claude is back at its prompt (AMA tab, 04.11.2026).
             # A turn that ended without a Stop hook (Esc, an error, a full context, a reply
             # to a background task's notification) stays "running" in cmux for good: seen on
             # 04.11.2026, tabs "working" for 4 h and 26 h. Silence in the transcript and its
